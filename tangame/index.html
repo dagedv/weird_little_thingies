@@ -1,0 +1,584 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Tangram Puzzle Game</title>
+  <style>
+    html, body {
+      margin: 0;
+      height: 100%;
+      overflow: hidden;
+      font-family: Arial, Helvetica, sans-serif;
+      background: #f6f7f9;
+    }
+    #wrap {
+      display: grid;
+      grid-template-columns: 320px 1fr;
+      height: 100vh;
+    }
+    #ui {
+      box-sizing: border-box;
+      padding: 16px;
+      background: #ffffff;
+      border-right: 1px solid #d7dde5;
+      overflow: auto;
+    }
+    #ui h1 {
+      margin: 0 0 12px 0;
+      font-size: 22px;
+    }
+    #ui p, #ui li {
+      line-height: 1.4;
+      color: #223;
+      font-size: 14px;
+    }
+    #ui .panel {
+      background: #f7f9fc;
+      border: 1px solid #dbe3ec;
+      border-radius: 12px;
+      padding: 12px;
+      margin-bottom: 12px;
+    }
+    #ui button {
+      width: 100%;
+      border: 0;
+      border-radius: 10px;
+      padding: 12px 14px;
+      font-size: 15px;
+      cursor: pointer;
+      background: #2d6cdf;
+      color: white;
+      margin-top: 8px;
+    }
+    #ui button.secondary {
+      background: #5c6778;
+    }
+    #status {
+      font-weight: bold;
+      min-height: 22px;
+      color: #1f5f2d;
+    }
+    #gameArea {
+      position: relative;
+      overflow: hidden;
+    }
+    canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+      touch-action: none;
+      cursor: grab;
+    }
+    canvas.dragging {
+      cursor: grabbing;
+    }
+    #win {
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      transform: translate(-50%, -50%);
+      background: rgba(25, 33, 46, 0.92);
+      color: white;
+      padding: 24px 28px;
+      border-radius: 18px;
+      font-size: 34px;
+      font-weight: 700;
+      box-shadow: 0 18px 50px rgba(0,0,0,0.3);
+      display: none;
+      text-align: center;
+      z-index: 2;
+    }
+    #hint {
+      color: #445;
+      font-size: 13px;
+    }
+    .kbd {
+      display: inline-block;
+      padding: 1px 6px;
+      border: 1px solid #cbd5e1;
+      border-bottom-width: 2px;
+      border-radius: 6px;
+      background: #fff;
+      font-family: monospace;
+      font-size: 12px;
+    }
+    #testStatus {
+      font-family: monospace;
+      white-space: pre-wrap;
+      font-size: 12px;
+      color: #334;
+      margin-top: 8px;
+    }
+  </style>
+</head>
+<body>
+<div id="wrap">
+  <div id="ui">
+    <h1>Tangram Game</h1>
+
+    <div class="panel">
+      <p>Rebuild the square by moving, rotating, and flipping the 7 pieces.</p>
+      <ul>
+        <li>Drag with left mouse to move a piece</li>
+        <li>Mouse wheel rotates the selected piece freely</li>
+        <li>Press <span class="kbd">F</span> to flip the selected piece</li>
+        <li>Press <span class="kbd">R</span> to reset to the solved layout</li>
+        <li>Press <span class="kbd">S</span> to shuffle</li>
+      </ul>
+      <p id="hint">Solve the puzzle without a visible placement board. Use “Show solution” only if you want to give up.</p>
+    </div>
+
+    <div class="panel">
+      <div id="status">Arrange all pieces into the square.</div>
+      <button id="shuffleBtn">Shuffle pieces</button>
+      <button id="resetBtn" class="secondary">Reset pieces</button>
+      <button id="toggleSolutionBtn" class="secondary">Show solution</button>
+    </div>
+
+    <div class="panel">
+      <p><strong>Note:</strong> This uses the standard 7-piece tangram set: 2 large triangles, 1 medium triangle, 2 small triangles, 1 square, and 1 parallelogram.</p>
+    </div>
+
+    <div class="panel">
+      <p><strong>Self-tests:</strong> Basic geometry tests run automatically on load.</p>
+      <div id="testStatus">Running…</div>
+    </div>
+  </div>
+
+  <div id="gameArea">
+    <canvas id="canvas"></canvas>
+    <div id="win">You got it right!</div>
+  </div>
+</div>
+
+<script>
+(() => {
+  const canvas = document.getElementById('canvas');
+  const ctx = canvas.getContext('2d');
+  const statusEl = document.getElementById('status');
+  const winEl = document.getElementById('win');
+  const shuffleBtn = document.getElementById('shuffleBtn');
+  const resetBtn = document.getElementById('resetBtn');
+  const toggleSolutionBtn = document.getElementById('toggleSolutionBtn');
+  const testStatusEl = document.getElementById('testStatus');
+
+  let W = 0;
+  let H = 0;
+
+  const SQ = 320;
+  const BOARD_CENTER = { x: 620, y: 360 };
+  const POS_TOL = 6.0;
+  const ANGLE_TOL = 0.055;
+
+  // Exact solvable square arrangement on an 8x8 tangram grid.
+  // Grid coordinates are mapped to screen coordinates below.
+  const solvedPiecesGrid = [
+    { id: 'LT1', name: 'Large triangle 1', color: '#e76f51', poly: [[4, 4], [8, 0], [8, 8]] },
+    { id: 'LT2', name: 'Large triangle 2', color: '#f4a261', poly: [[4, 4], [8, 8], [0, 8]] },
+    { id: 'MT',  name: 'Medium triangle',  color: '#e9c46a', poly: [[0, 0], [4, 0], [0, 4]] },
+    { id: 'ST1', name: 'Small triangle 1', color: '#2a9d8f', poly: [[2, 6], [0, 8], [0, 4]] },
+    { id: 'ST2', name: 'Small triangle 2', color: '#264653', poly: [[4, 4], [2, 2], [6, 2]] },
+    { id: 'SQ',  name: 'Square',           color: '#8ab17d', poly: [[2, 6], [0, 4], [2, 2], [4, 4]] },
+    { id: 'PAR', name: 'Parallelogram',    color: '#577590', poly: [[8, 0], [6, 2], [2, 2], [4, 0]] }
+  ];
+
+  function gridToBoardPoint(x, y) {
+    return [
+      BOARD_CENTER.x + ((x - 4) * (SQ / 8)),
+      BOARD_CENTER.y + ((y - 4) * (SQ / 8))
+    ];
+  }
+
+  const solvedPieces = solvedPiecesGrid.map(piece => ({
+    ...piece,
+    poly: piece.poly.map(([x, y]) => gridToBoardPoint(x, y))
+  }));
+
+  function centroid(poly) {
+    let x = 0;
+    let y = 0;
+    for (const [px, py] of poly) {
+      x += px;
+      y += py;
+    }
+    return [x / poly.length, y / poly.length];
+  }
+
+  function polygonArea(poly) {
+    let sum = 0;
+    for (let i = 0; i < poly.length; i++) {
+      const [x1, y1] = poly[i];
+      const [x2, y2] = poly[(i + 1) % poly.length];
+      sum += x1 * y2 - x2 * y1;
+    }
+    return Math.abs(sum) / 2;
+  }
+
+  function toLocal(poly) {
+    const c = centroid(poly);
+    return {
+      centroid: c,
+      local: poly.map(([x, y]) => [x - c[0], y - c[1]])
+    };
+  }
+
+  function clone(obj) {
+    return JSON.parse(JSON.stringify(obj));
+  }
+
+  const pieces = solvedPieces.map((piece, idx) => {
+    const t = toLocal(piece.poly);
+    return {
+      id: piece.id,
+      name: piece.name,
+      color: piece.color,
+      local: t.local,
+      solvedX: t.centroid[0],
+      solvedY: t.centroid[1],
+      x: t.centroid[0],
+      y: t.centroid[1],
+      angle: 0,
+      solvedAngle: 0,
+      flipped: false,
+      solvedFlipped: false,
+      z: idx + 1
+    };
+  });
+
+  const initialState = pieces.map(clone);
+  let selectedPiece = null;
+  let showSolution = false;
+  let dragging = false;
+  let dragOffsetX = 0;
+  let dragOffsetY = 0;
+
+  function resize() {
+    const rect = canvas.getBoundingClientRect();
+    const dpr = window.devicePixelRatio || 1;
+    W = Math.round(rect.width);
+    H = Math.round(rect.height);
+    canvas.width = Math.round(W * dpr);
+    canvas.height = Math.round(H * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    draw();
+  }
+
+  function transformedPoints(piece) {
+    const ca = Math.cos(piece.angle);
+    const sa = Math.sin(piece.angle);
+    return piece.local.map(([lx, ly]) => {
+      const fx = piece.flipped ? -lx : lx;
+      const x = fx * ca - ly * sa + piece.x;
+      const y = fx * sa + ly * ca + piece.y;
+      return [x, y];
+    });
+  }
+
+  function drawPolygon(poly, fill, stroke, lineWidth = 2) {
+    ctx.beginPath();
+    ctx.moveTo(poly[0][0], poly[0][1]);
+    for (let i = 1; i < poly.length; i++) {
+      ctx.lineTo(poly[i][0], poly[i][1]);
+    }
+    ctx.closePath();
+    ctx.fillStyle = fill;
+    ctx.fill();
+    ctx.lineWidth = lineWidth;
+    ctx.strokeStyle = stroke;
+    ctx.stroke();
+  }
+
+  function drawTarget() {
+    if (!showSolution) return;
+
+    ctx.save();
+    ctx.setLineDash([8, 6]);
+    ctx.strokeStyle = 'rgba(40,60,90,0.55)';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(BOARD_CENTER.x - SQ / 2, BOARD_CENTER.y - SQ / 2, SQ, SQ);
+    ctx.setLineDash([]);
+
+    for (const piece of pieces) {
+      const temp = {
+        ...piece,
+        x: piece.solvedX,
+        y: piece.solvedY,
+        angle: piece.solvedAngle,
+        flipped: piece.solvedFlipped
+      };
+      drawPolygon(
+        transformedPoints(temp),
+        'rgba(120, 140, 170, 0.10)',
+        'rgba(80, 95, 120, 0.28)',
+        1.5
+      );
+    }
+    ctx.restore();
+  }
+
+  function draw() {
+    ctx.clearRect(0, 0, W, H);
+
+    ctx.save();
+    ctx.strokeStyle = 'rgba(100,120,150,0.08)';
+    ctx.lineWidth = 1;
+    for (let x = 0; x < W; x += 32) {
+      ctx.beginPath();
+      ctx.moveTo(x, 0);
+      ctx.lineTo(x, H);
+      ctx.stroke();
+    }
+    for (let y = 0; y < H; y += 32) {
+      ctx.beginPath();
+      ctx.moveTo(0, y);
+      ctx.lineTo(W, y);
+      ctx.stroke();
+    }
+    ctx.restore();
+
+    drawTarget();
+
+    const ordered = [...pieces].sort((a, b) => a.z - b.z);
+    for (const piece of ordered) {
+      const poly = transformedPoints(piece);
+      ctx.save();
+      ctx.shadowColor = 'rgba(0,0,0,0.18)';
+      ctx.shadowBlur = 10;
+      ctx.shadowOffsetY = 3;
+      drawPolygon(poly, piece.color, 'rgba(20,20,30,0.8)', selectedPiece === piece ? 4 : 2);
+      ctx.restore();
+
+      if (selectedPiece === piece) {
+        ctx.beginPath();
+        ctx.arc(piece.x, piece.y, 5, 0, Math.PI * 2);
+        ctx.fillStyle = '#111';
+        ctx.fill();
+      }
+    }
+  }
+
+  function pointInPoly(point, poly) {
+    const [x, y] = point;
+    let inside = false;
+    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+      const xi = poly[i][0], yi = poly[i][1];
+      const xj = poly[j][0], yj = poly[j][1];
+      const intersects = ((yi > y) !== (yj > y)) &&
+        (x < (xj - xi) * (y - yi) / ((yj - yi) || 1e-12) + xi);
+      if (intersects) inside = !inside;
+    }
+    return inside;
+  }
+
+  function topPieceAt(x, y) {
+    const ordered = [...pieces].sort((a, b) => b.z - a.z);
+    for (const piece of ordered) {
+      if (pointInPoly([x, y], transformedPoints(piece))) {
+        return piece;
+      }
+    }
+    return null;
+  }
+
+  function bringToFront(piece) {
+    const maxZ = Math.max(...pieces.map(p => p.z));
+    piece.z = maxZ + 1;
+  }
+
+  function canvasPoint(evt) {
+    const rect = canvas.getBoundingClientRect();
+    return {
+      x: evt.clientX - rect.left,
+      y: evt.clientY - rect.top
+    };
+  }
+
+  canvas.addEventListener('pointerdown', (evt) => {
+    const p = canvasPoint(evt);
+    const piece = topPieceAt(p.x, p.y);
+    selectedPiece = piece;
+    if (piece) {
+      bringToFront(piece);
+      dragging = true;
+      dragOffsetX = p.x - piece.x;
+      dragOffsetY = p.y - piece.y;
+      canvas.classList.add('dragging');
+      canvas.setPointerCapture(evt.pointerId);
+    }
+    draw();
+  });
+
+  canvas.addEventListener('pointermove', (evt) => {
+    if (!dragging || !selectedPiece) return;
+    const p = canvasPoint(evt);
+    selectedPiece.x = p.x - dragOffsetX;
+    selectedPiece.y = p.y - dragOffsetY;
+    draw();
+    checkWin();
+  });
+
+  function endDrag(evt) {
+    dragging = false;
+    canvas.classList.remove('dragging');
+    try {
+      canvas.releasePointerCapture(evt.pointerId);
+    } catch (_) {}
+    checkWin();
+    draw();
+  }
+
+  canvas.addEventListener('pointerup', endDrag);
+  canvas.addEventListener('pointercancel', endDrag);
+
+  canvas.addEventListener('wheel', (evt) => {
+    if (!selectedPiece) return;
+    evt.preventDefault();
+    const delta = Math.sign(evt.deltaY);
+    const step = delta * (Math.PI / 90) * 3;
+    selectedPiece.angle += step;
+    draw();
+    checkWin();
+  }, { passive: false });
+
+  window.addEventListener('keydown', (evt) => {
+    const key = evt.key.toLowerCase();
+    if (key === 'f' && selectedPiece) {
+      selectedPiece.flipped = !selectedPiece.flipped;
+      draw();
+      checkWin();
+    } else if (key === 'r') {
+      resetPieces();
+    } else if (key === 's') {
+      shufflePieces();
+    }
+  });
+
+  function resetPieces() {
+    for (let i = 0; i < pieces.length; i++) {
+      Object.assign(pieces[i], clone(initialState[i]));
+    }
+    selectedPiece = null;
+    winEl.style.display = 'none';
+    statusEl.textContent = 'Arrange all pieces into the square.';
+    draw();
+  }
+
+  function shufflePieces() {
+    winEl.style.display = 'none';
+    statusEl.textContent = 'Arrange all pieces into the square.';
+    const pad = 90;
+    const leftBandX = Math.min(240, W * 0.28);
+    pieces.forEach((piece, i) => {
+      piece.x = 120 + Math.random() * Math.max(120, leftBandX - 140);
+      piece.y = pad + Math.random() * Math.max(120, H - pad * 2);
+      piece.angle = Math.random() * Math.PI * 2;
+      piece.flipped = Math.random() < 0.5;
+      piece.z = i + 1;
+    });
+    selectedPiece = null;
+    draw();
+  }
+
+  function normalizeAngle(a) {
+    while (a <= -Math.PI) a += Math.PI * 2;
+    while (a > Math.PI) a -= Math.PI * 2;
+    return a;
+  }
+
+  function checkWin() {
+    for (const piece of pieces) {
+      const dx = piece.x - piece.solvedX;
+      const dy = piece.y - piece.solvedY;
+      const da = Math.abs(normalizeAngle(piece.angle - piece.solvedAngle));
+      if (Math.hypot(dx, dy) > POS_TOL || da > ANGLE_TOL || piece.flipped !== piece.solvedFlipped) {
+        winEl.style.display = 'none';
+        statusEl.textContent = 'Arrange all pieces into the square.';
+        return false;
+      }
+    }
+    statusEl.textContent = 'Perfect fit detected.';
+    winEl.style.display = 'block';
+    return true;
+  }
+
+  function assert(condition, message) {
+    if (!condition) throw new Error(message);
+  }
+
+  function runSelfTests() {
+    const results = [];
+
+    // Test 1: correct inventory.
+    assert(pieces.length === 7, 'Expected 7 tangram pieces.');
+    assert(pieces.some(p => p.id === 'PAR'), 'Expected one parallelogram piece.');
+    assert(pieces.some(p => p.id === 'SQ'), 'Expected one square piece.');
+
+    // Test 2: total area equals the target square area.
+    const areaSum = solvedPieces.reduce((sum, piece) => sum + polygonArea(piece.poly), 0);
+    const expectedArea = SQ * SQ;
+    assert(Math.abs(areaSum - expectedArea) < 1e-6, `Area mismatch: ${areaSum} vs ${expectedArea}`);
+
+    // Test 3: solved layout must immediately win.
+    resetPieces();
+    assert(checkWin() === true, 'Solved layout should satisfy win condition.');
+
+    // Test 4: moving a piece must fail the win condition.
+    pieces[0].x += POS_TOL + 10;
+    assert(checkWin() === false, 'Moved piece should fail win condition.');
+    resetPieces();
+
+    // Test 5: rotating a piece beyond tolerance must fail.
+    pieces[1].angle += ANGLE_TOL + 0.02;
+    assert(checkWin() === false, 'Rotated piece should fail win condition.');
+    resetPieces();
+
+    // Test 6: the solved bounding box matches the target square.
+    const allPoints = solvedPieces.flatMap(piece => piece.poly);
+    const xs = allPoints.map(([x]) => x);
+    const ys = allPoints.map(([, y]) => y);
+    const minX = Math.min(...xs);
+    const maxX = Math.max(...xs);
+    const minY = Math.min(...ys);
+    const maxY = Math.max(...ys);
+    assert(Math.abs((maxX - minX) - SQ) < 1e-6, 'Solved width must equal SQ.');
+    assert(Math.abs((maxY - minY) - SQ) < 1e-6, 'Solved height must equal SQ.');
+
+    results.push('PASS: 7 pieces detected');
+    results.push('PASS: includes square and parallelogram');
+    results.push('PASS: piece areas exactly fill the square');
+    results.push('PASS: solved layout wins');
+    results.push('PASS: moved piece no longer wins');
+    results.push('PASS: rotated piece no longer wins');
+    results.push('PASS: solved bounding box equals target square');
+
+    // Test 7: solution overlay is hidden by default.
+    assert(showSolution === false, 'Solution overlay should be hidden by default.');
+    results.push('PASS: solution overlay hidden by default');
+
+    testStatusEl.textContent = results.join('\n');
+  }
+
+  window.addEventListener('resize', resize);
+  shuffleBtn.addEventListener('click', shufflePieces);
+  resetBtn.addEventListener('click', resetPieces);
+  toggleSolutionBtn.addEventListener('click', () => {
+    showSolution = !showSolution;
+    toggleSolutionBtn.textContent = showSolution ? 'Hide solution' : 'Show solution';
+    draw();
+  });
+
+  resize();
+
+  try {
+    runSelfTests();
+  } catch (err) {
+    testStatusEl.textContent = `SELF-TEST FAILED: ${err.message}`;
+    console.error(err);
+  }
+
+  shufflePieces();
+})();
+</script>
+</body>
+</html>
