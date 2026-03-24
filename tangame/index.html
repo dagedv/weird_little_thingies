@@ -121,9 +121,8 @@
       <p>Rebuild the square by moving, rotating, and flipping the 7 pieces.</p>
       <ul>
         <li>Drag with left mouse to move a piece</li>
-        <li>Mouse wheel rotates the selected piece freely</li>
+        <li>Mouse wheel rotates the selected piece with speed-sensitive precision (hold <span class="kbd">Shift</span> for ultra-fine control)</li>
         <li>Press <span class="kbd">F</span> to flip the selected piece</li>
-        <li>Press <span class="kbd">R</span> to reset to the solved layout</li>
         <li>Press <span class="kbd">S</span> to shuffle</li>
       </ul>
       <p id="hint">Solve the puzzle without a visible placement board. Use “Show solution” only if you want to give up.</p>
@@ -132,7 +131,6 @@
     <div class="panel">
       <div id="status">Arrange all pieces into the square.</div>
       <button id="shuffleBtn">Shuffle pieces</button>
-      <button id="resetBtn" class="secondary">Reset pieces</button>
       <button id="toggleSolutionBtn" class="secondary">Show solution</button>
     </div>
 
@@ -159,7 +157,6 @@
   const statusEl = document.getElementById('status');
   const winEl = document.getElementById('win');
   const shuffleBtn = document.getElementById('shuffleBtn');
-  const resetBtn = document.getElementById('resetBtn');
   const toggleSolutionBtn = document.getElementById('toggleSolutionBtn');
   const testStatusEl = document.getElementById('testStatus');
 
@@ -170,9 +167,8 @@
   const BOARD_CENTER = { x: 620, y: 360 };
   const POS_TOL = 6.0;
   const ANGLE_TOL = 0.055;
+  const WHEEL_ROTATION_BASE = (Math.PI / 180) * 0.5;
 
-  // Exact solvable square arrangement on an 8x8 tangram grid.
-  // Grid coordinates are mapped to screen coordinates below.
   const solvedPiecesGrid = [
     { id: 'LT1', name: 'Large triangle 1', color: '#e76f51', poly: [[4, 4], [8, 0], [8, 8]] },
     { id: 'LT2', name: 'Large triangle 2', color: '#f4a261', poly: [[4, 4], [8, 8], [0, 8]] },
@@ -434,8 +430,21 @@
   canvas.addEventListener('wheel', (evt) => {
     if (!selectedPiece) return;
     evt.preventDefault();
-    const delta = Math.sign(evt.deltaY);
-    const step = delta * (Math.PI / 90) * 3;
+    // Enhanced dynamic precision: very fine when slow, accelerated when fast
+    const raw = Math.abs(evt.deltaY);
+    const speed = Math.min(raw, 80);
+
+    // Non-linear scaling (quadratic curve)
+    // slow -> ~0.1x, fast -> ~6x
+    const normalized = speed / 80;
+    const factor = 0.1 + Math.pow(normalized, 2) * 6.0;
+
+    let step = Math.sign(evt.deltaY) * WHEEL_ROTATION_BASE * factor;
+
+    // Hold Shift for ultra-precision mode
+    if (evt.shiftKey) {
+      step *= 0.2;
+    }
     selectedPiece.angle += step;
     draw();
     checkWin();
@@ -447,8 +456,6 @@
       selectedPiece.flipped = !selectedPiece.flipped;
       draw();
       checkWin();
-    } else if (key === 'r') {
-      resetPieces();
     } else if (key === 's') {
       shufflePieces();
     }
@@ -509,31 +516,25 @@
   function runSelfTests() {
     const results = [];
 
-    // Test 1: correct inventory.
     assert(pieces.length === 7, 'Expected 7 tangram pieces.');
     assert(pieces.some(p => p.id === 'PAR'), 'Expected one parallelogram piece.');
     assert(pieces.some(p => p.id === 'SQ'), 'Expected one square piece.');
 
-    // Test 2: total area equals the target square area.
     const areaSum = solvedPieces.reduce((sum, piece) => sum + polygonArea(piece.poly), 0);
     const expectedArea = SQ * SQ;
     assert(Math.abs(areaSum - expectedArea) < 1e-6, `Area mismatch: ${areaSum} vs ${expectedArea}`);
 
-    // Test 3: solved layout must immediately win.
     resetPieces();
     assert(checkWin() === true, 'Solved layout should satisfy win condition.');
 
-    // Test 4: moving a piece must fail the win condition.
     pieces[0].x += POS_TOL + 10;
     assert(checkWin() === false, 'Moved piece should fail win condition.');
     resetPieces();
 
-    // Test 5: rotating a piece beyond tolerance must fail.
     pieces[1].angle += ANGLE_TOL + 0.02;
     assert(checkWin() === false, 'Rotated piece should fail win condition.');
     resetPieces();
 
-    // Test 6: the solved bounding box matches the target square.
     const allPoints = solvedPieces.flatMap(piece => piece.poly);
     const xs = allPoints.map(([x]) => x);
     const ys = allPoints.map(([, y]) => y);
@@ -544,6 +545,8 @@
     assert(Math.abs((maxX - minX) - SQ) < 1e-6, 'Solved width must equal SQ.');
     assert(Math.abs((maxY - minY) - SQ) < 1e-6, 'Solved height must equal SQ.');
 
+    assert(showSolution === false, 'Solution overlay should be hidden by default.');
+
     results.push('PASS: 7 pieces detected');
     results.push('PASS: includes square and parallelogram');
     results.push('PASS: piece areas exactly fill the square');
@@ -551,9 +554,6 @@
     results.push('PASS: moved piece no longer wins');
     results.push('PASS: rotated piece no longer wins');
     results.push('PASS: solved bounding box equals target square');
-
-    // Test 7: solution overlay is hidden by default.
-    assert(showSolution === false, 'Solution overlay should be hidden by default.');
     results.push('PASS: solution overlay hidden by default');
 
     testStatusEl.textContent = results.join('\n');
@@ -561,8 +561,11 @@
 
   window.addEventListener('resize', resize);
   shuffleBtn.addEventListener('click', shufflePieces);
-  resetBtn.addEventListener('click', resetPieces);
   toggleSolutionBtn.addEventListener('click', () => {
+    if (!showSolution) {
+      const confirmed = window.confirm('Are you sure you want the solution?');
+      if (!confirmed) return;
+    }
     showSolution = !showSolution;
     toggleSolutionBtn.textContent = showSolution ? 'Hide solution' : 'Show solution';
     draw();
